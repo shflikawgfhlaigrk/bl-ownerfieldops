@@ -1,0 +1,19 @@
+{
+  "name": "ownerfieldops",
+  "version": "1.0.0",
+  "description": "One simple in-house system for running a field-service business: customers, leads, quotes, schedule, jobs, workers, invoices, payments, reviews, reports.",
+  "type": "module",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node --watch server/server.js",
+    "seed": "node server/seed.js",
+    "test": "node --test server/tests/"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
