@@ -4,6 +4,7 @@ import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { q, logActivity, UPLOADS_DIR } from '../db.js';
 import { wrap, pick, required } from './helpers.js';
+import { rateLimit } from '../rate-limit.js';
 
 export const ops = Router();
 
@@ -247,7 +248,15 @@ ops.get('/clock-status/:workerId', wrap((req, res) => {
 }));
 
 // ---------- Photos (JSON upload with base64 data — no extra deps) ----------
-ops.post('/jobs/:id/photos', wrap((req, res) => {
+// Photos land on disk, so cap the burst rate — 240/min per IP still leaves a whole
+// crew room to dump a day of before/after shots at once.
+const photoLimit = rateLimit({
+  windowMs: 60_000,
+  max: 240,
+  message: 'Too many photo uploads at once. Please wait a moment and try again.',
+});
+
+ops.post('/jobs/:id/photos', photoLimit, wrap((req, res) => {
   required(req.body, ['data']);
   const job = q.get(`SELECT id FROM jobs WHERE id = ?`, req.params.id);
   if (!job) return res.status(404).json({ error: 'Job not found' });

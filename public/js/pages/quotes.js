@@ -219,8 +219,8 @@ export function estimateCalculator(onUse) {
     const subtotal = labor + materials + travel;
     const total = subtotal * (1 + (Number(f.tax) || 0) / 100);
     root.querySelector('#calcOut').innerHTML = `
-      <div class="list-item"><span>Labor (${f.hours}h × ${f.workers} worker${f.workers == 1 ? '' : 's'} × ${money(f.rate)}/h)</span><b>${money(labor)}</b></div>
-      <div class="list-item"><span>Materials with ${f.markup}% markup</span><b>${money(materials)}</b></div>
+      <div class="list-item"><span>Labor (${esc(f.hours)}h × ${esc(f.workers)} worker${f.workers == 1 ? '' : 's'} × ${money(f.rate)}/h)</span><b>${money(labor)}</b></div>
+      <div class="list-item"><span>Materials with ${esc(f.markup)}% markup</span><b>${money(materials)}</b></div>
       <div class="list-item"><span>Travel fee</span><b>${money(travel)}</b></div>
       <div class="list-item" style="font-size:17px"><span><b>Suggested price (with tax)</b></span><b>${money(total)}</b></div>`;
     return { f, labor, materials, travel, tax: Number(f.tax) || 0 };

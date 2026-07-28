@@ -5,6 +5,7 @@ import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { q, logActivity, getSetting, UPLOADS_DIR } from '../db.js';
 import { wrap, required } from './helpers.js';
+import { rateLimit } from '../rate-limit.js';
 import { quoteTotals } from './sales.js';
 import { invoiceTotals } from './money.js';
 
@@ -84,8 +85,16 @@ portal.post('/portal-data/:token/messages', wrap((req, res) => {
   res.json({ ok: true });
 }));
 
+// The portal link is public, so photo upload is the one open door that writes to disk.
+// 60/min per IP is far above a real customer sending a few pictures.
+const uploadLimit = rateLimit({
+  windowMs: 60_000,
+  max: 60,
+  message: 'Too many uploads right now. Please wait a minute and try again.',
+});
+
 // Customer photo upload (e.g. "here's the problem area") attaches to their most recent job.
-portal.post('/portal-data/:token/photos', wrap((req, res) => {
+portal.post('/portal-data/:token/photos', uploadLimit, wrap((req, res) => {
   const c = customerByToken(req.params.token);
   if (!c) return res.status(404).json({ error: 'Invalid link' });
   required(req.body, ['data']);

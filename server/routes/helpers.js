@@ -32,12 +32,17 @@ export function toCsv(rows, columns) {
   return [header, ...lines].join('\n');
 }
 
+// Hard ceiling on how much pasted CSV we will scan (~10M chars is far more than
+// any real import; it keeps the parse loop bounded no matter what is posted).
+const MAX_CSV_CHARS = 10_000_000;
+
 // Very small CSV parser (handles quoted fields with commas/newlines).
 export function parseCsv(text) {
   const rows = [];
   let row = [], field = '', inQuotes = false;
   const s = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  for (let i = 0; i < s.length; i++) {
+  const len = Math.min(s.length, MAX_CSV_CHARS);
+  for (let i = 0; i < len; i++) {
     const ch = s[i];
     if (inQuotes) {
       if (ch === '"') {

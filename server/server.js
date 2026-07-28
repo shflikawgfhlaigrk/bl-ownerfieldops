@@ -12,6 +12,7 @@ import { money } from './routes/money.js';
 import { growth } from './routes/growth.js';
 import { misc } from './routes/misc.js';
 import { portal } from './routes/portal.js';
+import { rateLimit } from './rate-limit.js';
 import { startAutomationLoop } from './automations.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -40,13 +41,21 @@ app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '7d' }));
 const PUBLIC = path.join(ROOT, 'public');
 app.use(express.static(PUBLIC));
 
+// Page loads are cheap, but the shareable links are public — cap floods well above
+// anything a real person (or a whole office on one IP) would ever do in a minute.
+const pageLimit = rateLimit({
+  windowMs: 60_000,
+  max: 600,
+  message: 'Too many requests. Please wait a moment and refresh.',
+});
+
 // Customer portal page (own URL so it can be shared safely)
-app.get('/portal/:token', (req, res) => res.sendFile(path.join(PUBLIC, 'portal.html')));
+app.get('/portal/:token', pageLimit, (req, res) => res.sendFile(path.join(PUBLIC, 'portal.html')));
 
 // Printable invoice view
-app.get('/invoice/:id/print', (req, res) => res.sendFile(path.join(PUBLIC, 'invoice-print.html')));
+app.get('/invoice/:id/print', pageLimit, (req, res) => res.sendFile(path.join(PUBLIC, 'invoice-print.html')));
 
-app.use((req, res) => {
+app.use(pageLimit, (req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
   res.sendFile(path.join(PUBLIC, 'index.html'));
 });
