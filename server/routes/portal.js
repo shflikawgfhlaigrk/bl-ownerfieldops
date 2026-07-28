@@ -5,7 +5,8 @@ import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { q, logActivity, getSetting, UPLOADS_DIR } from '../db.js';
 import { wrap, required } from './helpers.js';
-import { rateLimit } from '../rate-limit.js';
+import rateLimit from 'express-rate-limit';
+import { sharedLimitOptions } from '../rate-limit.js';
 import { quoteTotals } from './sales.js';
 import { invoiceTotals } from './money.js';
 
@@ -16,7 +17,19 @@ function customerByToken(token) {
   return q.get(`SELECT * FROM customers WHERE portal_token = ?`, token);
 }
 
-portal.get('/portal-data/:token', wrap((req, res) => {
+// The portal token IS the credential — there is no login in front of it, and a
+// wrong token answers differently from a right one. So these get a much tighter
+// cap than an ordinary page load: 60/min per IP is roughly one request a second,
+// far more than a customer reading their quotes and messages, and low enough
+// that guessing at tokens is pointless.
+const portalTokenLimit = rateLimit({
+  ...sharedLimitOptions,
+  windowMs: 60_000,
+  limit: 60,
+  message: 'Too many requests. Please wait a minute and try again.',
+});
+
+portal.get('/portal-data/:token', portalTokenLimit, wrap((req, res) => {
   const c = customerByToken(req.params.token);
   if (!c) return res.status(404).json({ error: 'This link is not valid. Please contact us for a new one.' });
 
@@ -53,7 +66,7 @@ portal.get('/portal-data/:token', wrap((req, res) => {
   });
 }));
 
-portal.post('/portal-data/:token/approve-quote/:quoteId', wrap((req, res) => {
+portal.post('/portal-data/:token/approve-quote/:quoteId', portalTokenLimit, wrap((req, res) => {
   const c = customerByToken(req.params.token);
   if (!c) return res.status(404).json({ error: 'Invalid link' });
   const quote = q.get(`SELECT * FROM quotes WHERE id = ? AND customer_id = ?`, req.params.quoteId, c.id);
@@ -66,7 +79,7 @@ portal.post('/portal-data/:token/approve-quote/:quoteId', wrap((req, res) => {
   res.json({ ok: true });
 }));
 
-portal.post('/portal-data/:token/decline-quote/:quoteId', wrap((req, res) => {
+portal.post('/portal-data/:token/decline-quote/:quoteId', portalTokenLimit, wrap((req, res) => {
   const c = customerByToken(req.params.token);
   if (!c) return res.status(404).json({ error: 'Invalid link' });
   const quote = q.get(`SELECT * FROM quotes WHERE id = ? AND customer_id = ? AND status = 'sent'`, req.params.quoteId, c.id);
@@ -76,7 +89,7 @@ portal.post('/portal-data/:token/decline-quote/:quoteId', wrap((req, res) => {
   res.json({ ok: true });
 }));
 
-portal.post('/portal-data/:token/messages', wrap((req, res) => {
+portal.post('/portal-data/:token/messages', portalTokenLimit, wrap((req, res) => {
   const c = customerByToken(req.params.token);
   if (!c) return res.status(404).json({ error: 'Invalid link' });
   required(req.body, ['body']);
@@ -88,8 +101,9 @@ portal.post('/portal-data/:token/messages', wrap((req, res) => {
 // The portal link is public, so photo upload is the one open door that writes to disk.
 // 60/min per IP is far above a real customer sending a few pictures.
 const uploadLimit = rateLimit({
+  ...sharedLimitOptions,
   windowMs: 60_000,
-  max: 60,
+  limit: 60,
   message: 'Too many uploads right now. Please wait a minute and try again.',
 });
 

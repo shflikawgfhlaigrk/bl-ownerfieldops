@@ -12,7 +12,8 @@ import { money } from './routes/money.js';
 import { growth } from './routes/growth.js';
 import { misc } from './routes/misc.js';
 import { portal } from './routes/portal.js';
-import { rateLimit } from './rate-limit.js';
+import rateLimit from 'express-rate-limit';
+import { sharedLimitOptions, parseTrustProxy } from './rate-limit.js';
 import { startAutomationLoop } from './automations.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -29,6 +30,20 @@ if (existsSync(envPath)) {
 }
 
 const app = express();
+
+// How the app is fronted decides what req.ip is, and req.ip is the rate-limit
+// key — see the note in rate-limit.js. Default (TRUST_PROXY unset) is a direct
+// listener, which is also Express's own default.
+const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+app.set('trust proxy', trustProxy);
+if (trustProxy === true) {
+  console.warn(
+    '  WARNING: TRUST_PROXY=true trusts any X-Forwarded-For header a client sends, which lets\n' +
+    '  anyone bypass rate limiting. Set TRUST_PROXY to the number of proxies in front of the\n' +
+    '  app (e.g. TRUST_PROXY=1) or to an explicit list of proxy addresses instead.\n'
+  );
+}
+
 app.use(express.json({ limit: '25mb' })); // roomy enough for base64 photo uploads
 
 // API
@@ -44,8 +59,9 @@ app.use(express.static(PUBLIC));
 // Page loads are cheap, but the shareable links are public — cap floods well above
 // anything a real person (or a whole office on one IP) would ever do in a minute.
 const pageLimit = rateLimit({
+  ...sharedLimitOptions,
   windowMs: 60_000,
-  max: 600,
+  limit: 600,
   message: 'Too many requests. Please wait a moment and refresh.',
 });
 

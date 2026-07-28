@@ -4,7 +4,8 @@ import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { q, logActivity, UPLOADS_DIR } from '../db.js';
 import { wrap, pick, required } from './helpers.js';
-import { rateLimit } from '../rate-limit.js';
+import rateLimit from 'express-rate-limit';
+import { sharedLimitOptions } from '../rate-limit.js';
 
 export const ops = Router();
 
@@ -251,8 +252,9 @@ ops.get('/clock-status/:workerId', wrap((req, res) => {
 // Photos land on disk, so cap the burst rate — 240/min per IP still leaves a whole
 // crew room to dump a day of before/after shots at once.
 const photoLimit = rateLimit({
+  ...sharedLimitOptions,
   windowMs: 60_000,
-  max: 240,
+  limit: 240,
   message: 'Too many photo uploads at once. Please wait a moment and try again.',
 });
 
