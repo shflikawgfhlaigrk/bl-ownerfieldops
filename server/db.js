@@ -5,10 +5,10 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const DATA_DIR = path.join(ROOT, 'data');
-export const UPLOADS_DIR = path.join(ROOT, 'uploads');
+export const DATA_DIR = process.env.OFO_DB_PATH ? path.dirname(path.resolve(process.env.OFO_DB_PATH)) : path.join(ROOT, 'data');
+export const UPLOADS_DIR = process.env.OFO_UPLOADS_DIR || (process.env.OFO_DB_PATH ? path.join(DATA_DIR, 'uploads') : path.join(ROOT, 'uploads'));
 mkdirSync(DATA_DIR, { recursive: true });
-mkdirSync(UPLOADS_DIR, { recursive: true });
+mkdirSync(UPLOADS_DIR, { recursive: true, mode: 0o700 });
 
 export const db = new DatabaseSync(
   process.env.OFO_DB_PATH || path.join(DATA_DIR, 'ownerfieldops.db')

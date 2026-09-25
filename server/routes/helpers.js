@@ -1,6 +1,6 @@
 // Small shared route utilities.
 export const wrap = (fn) => (req, res) =>
-  Promise.resolve(fn(req, res)).catch((err) => {
+  Promise.resolve().then(() => fn(req, res)).catch((err) => {
     console.error(err);
     res.status(err.status || 500).json({ error: String(err.message || err) });
   });
@@ -22,12 +22,16 @@ export function required(body, fields) {
 }
 
 export function csvEscape(v) {
-  const s = String(v ?? '');
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  let s = String(v ?? '');
+  // Keep actual numbers numeric, but never treat user text (including signed
+  // numbers and phone strings) as a spreadsheet formula. Prefix before CSV
+  // quoting so whitespace, controls and embedded delimiters cannot bypass it.
+  if (typeof v !== 'number' && /^[\s\p{Cc}\p{Cf}]*[=+\-@＝＋－＠]/u.test(s)) s = "'" + s;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 export function toCsv(rows, columns) {
-  const header = columns.join(',');
+  const header = columns.map(csvEscape).join(',');
   const lines = rows.map((r) => columns.map((c) => csvEscape(r[c])).join(','));
   return [header, ...lines].join('\n');
 }
@@ -40,7 +44,7 @@ const MAX_CSV_CHARS = 10_000_000;
 export function parseCsv(text) {
   const rows = [];
   let row = [], field = '', inQuotes = false;
-  const s = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const s = String(text || '');
   const len = Math.min(s.length, MAX_CSV_CHARS);
   for (let i = 0; i < len; i++) {
     const ch = s[i];
@@ -51,7 +55,10 @@ export function parseCsv(text) {
       } else field += ch;
     } else if (ch === '"') inQuotes = true;
     else if (ch === ',') { row.push(field); field = ''; }
-    else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      row.push(field); rows.push(row); row = []; field = '';
+      if (ch === '\r' && s[i + 1] === '\n') i++;
+    }
     else field += ch;
   }
   if (field !== '' || row.length) { row.push(field); rows.push(row); }

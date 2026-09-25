@@ -7,8 +7,11 @@ import { renderSchedule, renderJobDetail } from './pages/schedule.js';
 import { renderWorkerApp } from './pages/worker.js';
 import { renderInvoices, renderInvoiceDetail } from './pages/invoices.js';
 import { renderGrowth } from './pages/growth.js';
-import { renderReports } from './pages/reports.js';
-import { renderSettings } from './pages/settings.js';
+import { get, post, esc } from './api.js';
+// These optional page modules are absent in this checkout. Load them only when
+// selected, so their existing absence does not prevent sign-in or other pages.
+const renderReports = async (...args) => (await import('./pages/reports.js')).renderReports(...args);
+const renderSettings = async (...args) => (await import('./pages/settings.js')).renderSettings(...args);
 
 const NAV = [
   { section: 'Run the day' },
@@ -68,8 +71,15 @@ function renderNav() {
 
 async function route() {
   const path = currentPath();
+  const session = await get('/auth/session');
+  if (!session.authenticated) { location.replace('/login.html'); return; }
+  if (session.role === 'worker' && !path.startsWith('/worker')) { location.hash = '#/worker'; return; }
   document.body.classList.toggle('worker-mode', path.startsWith('/worker'));
   renderNav();
+  const logout = document.createElement('button');
+  logout.className = 'btn secondary'; logout.textContent = 'Sign out';
+  logout.onclick = async () => { await post('/auth/logout', {}); location.replace('/login.html'); };
+  document.getElementById('sidebar').appendChild(logout);
   const main = document.getElementById('main');
   main.innerHTML = '<div class="empty">Loading…</div>';
   window.scrollTo(0, 0);
@@ -81,7 +91,7 @@ async function route() {
       } catch (err) {
         console.error(err);
         main.innerHTML = `<div class="card"><div class="empty"><span class="big">😕</span>
-          Something went wrong: ${err.message || err}<br><br>
+          Something went wrong: ${esc(err.message || err)}<br><br>
           <button class="btn secondary" onclick="location.reload()">Reload</button></div></div>`;
       }
       return;

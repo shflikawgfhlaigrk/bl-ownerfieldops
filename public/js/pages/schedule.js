@@ -98,7 +98,7 @@ export async function jobForm(ctx, onSaved, existing) {
       ${input('time_start', 'Start', j.time_start || '', { type: 'time' })}
       ${input('time_end', 'End', j.time_end || '', { type: 'time' })}
     </div>
-    ${input('address', 'Job address (leave blank to use the customer\\'s)', j.address || '')}
+    ${input('address', 'Job address (leave blank to use the customer\'s)', j.address || '')}
     <label class="field"><span>Who's doing the work?</span>
       <div id="workerChecks">
         ${activeWorkers.length ? activeWorkers.map(w => `

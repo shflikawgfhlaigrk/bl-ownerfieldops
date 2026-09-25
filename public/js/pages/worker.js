@@ -4,21 +4,15 @@
 import { get, post, put, esc, fmtTime, fmtDate, fmtDateTime, todayStr, hoursBetween, getGps, fileToDataUrl } from '../api.js';
 import { toast, toastError, badge, emptyState, confirmDialog } from '../ui.js';
 
-const LS_KEY = 'ofo_worker';
-
-const savedWorker = () => {
-  try { return JSON.parse(localStorage.getItem(LS_KEY)); } catch { return null; }
-};
-
 export async function renderWorkerApp(main) {
-  const me = savedWorker();
+  const session = await get('/auth/session');
+  const me = session.role === 'worker' ? session.worker : null;
   if (!me) return renderLogin(main);
 
   let status;
   try {
     status = await get(`/clock-status/${me.id}`);
   } catch {
-    localStorage.removeItem(LS_KEY);
     return renderLogin(main);
   }
 
@@ -57,7 +51,7 @@ export async function renderWorkerApp(main) {
           <div class="sub">${fmtDate(j.date)}${j.time_start ? ' · ' + fmtTime(j.time_start) : ''} · ${esc(j.customer_name || '')}</div>
         </div>`).join('')}` : ''}`;
 
-  main.querySelector('#logout').onclick = () => { localStorage.removeItem(LS_KEY); renderWorkerApp(main); };
+  main.querySelector('#logout').onclick = async () => { await post('/auth/logout', {}); location.replace('/login.html?worker=1'); };
 
   main.querySelector('#clockIn')?.addEventListener('click', async () => {
     const btn = main.querySelector('#clockIn');
@@ -226,35 +220,5 @@ async function renderWorkerJob(main, jobId, me) {
 }
 
 async function renderLogin(main) {
-  const workers = await get('/workers');
-  const active = workers.filter(w => w.active);
-  main.innerHTML = `
-    <div style="max-width:380px;margin:8vh auto 0">
-      <div class="card">
-        <h2 style="font-size:19px">🧰 Worker sign in</h2>
-        ${active.length ? `
-          <label class="field"><span>Who are you?</span>
-            <select id="wSel">${active.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select></label>
-          <label class="field"><span>Your PIN</span>
-            <input id="wPin" type="tel" inputmode="numeric" maxlength="8" placeholder="4-digit PIN" autocomplete="off"></label>
-          <button class="btn big" style="width:100%" id="wGo">Sign in</button>
-          <div class="sub" style="margin-top:10px">Don't know your PIN? Ask the owner — it's on your worker card under Settings & Workers.</div>`
-          : `<div class="empty"><span class="big">👷</span>No workers set up yet.<br>
-             The owner adds workers (and their PINs) under <b>Settings & Workers</b>.</div>
-             <a class="btn secondary" style="width:100%" href="#/settings">Go to Settings</a>`}
-      </div>
-    </div>`;
-  main.querySelector('#wGo')?.addEventListener('click', async () => {
-    try {
-      const me = await post('/worker-login', {
-        worker_id: main.querySelector('#wSel').value,
-        pin: main.querySelector('#wPin').value.trim(),
-      });
-      localStorage.setItem(LS_KEY, JSON.stringify(me));
-      renderWorkerApp(main);
-    } catch (e) { toastError(e); }
-  });
-  main.querySelector('#wPin')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') main.querySelector('#wGo').click();
-  });
+  main.innerHTML = '<div class="card"><h2>Worker sign in</h2><p>Sign in with your worker ID and PIN.</p><a class="btn" href="/login.html?worker=1">Sign in</a></div>';
 }

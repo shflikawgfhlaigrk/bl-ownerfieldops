@@ -1,12 +1,13 @@
 // Jobs & scheduling, workers, checklists, time clock, and job photos.
 import { Router } from 'express';
-import { writeFileSync } from 'node:fs';
-import path from 'node:path';
-import { q, logActivity, UPLOADS_DIR } from '../db.js';
+import { q, logActivity } from '../db.js';
+import { storePhoto, removePhoto, removeJob } from '../photos.js';
 import { wrap, pick, required } from './helpers.js';
 import { rateLimit } from '../rate-limit.js';
+import { workerScope } from '../auth.js';
 
 export const ops = Router();
+ops.use(workerScope);
 
 // ---------- Workers ----------
 ops.get('/workers', wrap((req, res) => {
@@ -28,21 +29,14 @@ ops.put('/workers/:id', wrap((req, res) => {
   const f = pick(req.body, ['name','phone','email','pin','hourly_rate','color','active'], w);
   q.run(`UPDATE workers SET name=?, phone=?, email=?, pin=?, hourly_rate=?, color=?, active=? WHERE id=?`,
     f.name, f.phone, f.email, String(f.pin), Number(f.hourly_rate) || 0, f.color, f.active ? 1 : 0, w.id);
+  if (String(f.pin) !== w.pin || !f.active) q.run('DELETE FROM auth_sessions WHERE worker_id = ?', w.id);
   res.json(q.get(`SELECT * FROM workers WHERE id = ?`, w.id));
 }));
 
 ops.delete('/workers/:id', wrap((req, res) => {
   q.run(`UPDATE workers SET active = 0 WHERE id = ?`, req.params.id); // keep history, just deactivate
+  q.run('DELETE FROM auth_sessions WHERE worker_id = ?', req.params.id);
   res.json({ ok: true });
-}));
-
-// Worker login for the mobile view: name pick + PIN.
-ops.post('/worker-login', wrap((req, res) => {
-  required(req.body, ['worker_id', 'pin']);
-  const w = q.get(`SELECT id, name, color FROM workers WHERE id = ? AND pin = ? AND active = 1`,
-    req.body.worker_id, String(req.body.pin));
-  if (!w) return res.status(401).json({ error: 'Wrong PIN' });
-  res.json(w);
 }));
 
 // ---------- Checklist templates ----------
@@ -79,7 +73,7 @@ ops.delete('/checklist-templates/:id', wrap((req, res) => {
 }));
 
 // ---------- Jobs ----------
-function jobFull(id) {
+function jobFull(id, workerId = null) {
   const job = q.get(
     `SELECT j.*, c.name AS customer_name, c.phone AS customer_phone, c.portal_token
        FROM jobs j LEFT JOIN customers c ON c.id = j.customer_id WHERE j.id = ?`, id);
@@ -90,6 +84,7 @@ function jobFull(id) {
   job.photos = q.all(`SELECT * FROM photos WHERE job_id = ? ORDER BY id`, id);
   job.time_entries = q.all(
     `SELECT t.*, w.name AS worker_name FROM time_entries t JOIN workers w ON w.id = t.worker_id WHERE t.job_id = ? ORDER BY t.clock_in`, id);
+  if (workerId) { delete job.portal_token; job.time_entries = job.time_entries.filter(entry => entry.worker_id === workerId); }
   return job;
 }
 
@@ -130,7 +125,7 @@ ops.get('/jobs', wrap((req, res) => {
 }));
 
 ops.get('/jobs/:id', wrap((req, res) => {
-  const job = jobFull(req.params.id);
+  const job = jobFull(req.params.id, req.auth?.worker?.id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
   res.json(job);
 }));
@@ -192,11 +187,11 @@ ops.put('/jobs/:id', wrap((req, res) => {
     `UPDATE jobs SET customer_id=?, quote_id=?, title=?, service_type=?, date=?, time_start=?, time_end=?, address=?, notes=?, status=?, completed_at=? WHERE id=?`,
     f.customer_id || null, f.quote_id || null, f.title, f.service_type, f.date, f.time_start, f.time_end, f.address, f.notes, f.status, completedAt, job.id);
   if (req.body.worker_ids) setJobWorkers(job.id, req.body.worker_ids);
-  res.json(jobFull(job.id));
+  res.json(jobFull(job.id, req.auth?.worker?.id));
 }));
 
 ops.delete('/jobs/:id', wrap((req, res) => {
-  q.run(`DELETE FROM jobs WHERE id = ?`, req.params.id);
+  removeJob(req.params.id);
   res.json({ ok: true });
 }));
 
@@ -223,6 +218,7 @@ ops.get('/time-entries', wrap((req, res) => {
 
 ops.post('/clock-in', wrap((req, res) => {
   required(req.body, ['worker_id']);
+  if (!q.get('SELECT id FROM workers WHERE id = ? AND active = 1', req.body.worker_id)) return res.status(400).json({ error: 'Worker is inactive or missing.' });
   const open = q.get(`SELECT id FROM time_entries WHERE worker_id = ? AND clock_out IS NULL`, req.body.worker_id);
   if (open) return res.status(400).json({ error: 'Already clocked in — clock out first.' });
   const r = q.run(`INSERT INTO time_entries (worker_id, job_id, gps_in, notes) VALUES (?, ?, ?, ?)`,
@@ -233,6 +229,7 @@ ops.post('/clock-in', wrap((req, res) => {
 
 ops.post('/clock-out', wrap((req, res) => {
   required(req.body, ['worker_id']);
+  if (!q.get('SELECT id FROM workers WHERE id = ? AND active = 1', req.body.worker_id)) return res.status(400).json({ error: 'Worker is inactive or missing.' });
   const open = q.get(`SELECT * FROM time_entries WHERE worker_id = ? AND clock_out IS NULL ORDER BY id DESC`, req.body.worker_id);
   if (!open) return res.status(400).json({ error: 'Not clocked in.' });
   q.run(`UPDATE time_entries SET clock_out = datetime('now'), gps_out = ?, notes = CASE WHEN ? != '' THEN ? ELSE notes END WHERE id = ?`,
@@ -260,20 +257,10 @@ ops.post('/jobs/:id/photos', photoLimit, wrap((req, res) => {
   required(req.body, ['data']);
   const job = q.get(`SELECT id FROM jobs WHERE id = ?`, req.params.id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
-  const match = String(req.body.data).match(/^data:image\/(png|jpe?g|webp|heic);base64,(.+)$/s);
-  if (!match) return res.status(400).json({ error: 'Send a data URL for a png/jpg/webp image' });
-  const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
-  const buf = Buffer.from(match[2], 'base64');
-  if (buf.length > 15 * 1024 * 1024) return res.status(400).json({ error: 'Photo too large (15MB max)' });
-  const filename = `job${job.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-  writeFileSync(path.join(UPLOADS_DIR, filename), buf);
-  const r = q.run(`INSERT INTO photos (job_id, kind, filename, uploaded_by) VALUES (?, ?, ?, ?)`,
-    job.id, req.body.kind === 'after' ? 'after' : req.body.kind === 'other' ? 'other' : 'before',
-    filename, req.body.uploaded_by || '');
-  res.json(q.get(`SELECT * FROM photos WHERE id = ?`, r.lastInsertRowid));
+  res.json(storePhoto(job.id, req.body.data, req.body.kind || 'before', req.auth?.worker?.name || req.body.uploaded_by || '', { auth: req.auth }));
 }));
 
 ops.delete('/photos/:id', wrap((req, res) => {
-  q.run(`DELETE FROM photos WHERE id = ?`, req.params.id);
+  removePhoto(req.params.id);
   res.json({ ok: true });
 }));

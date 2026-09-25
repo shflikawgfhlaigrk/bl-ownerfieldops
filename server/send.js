@@ -2,6 +2,7 @@
 // With no Twilio/SMTP env vars (or Dry Run on in Settings), messages are
 // logged as dry_run instead of sent — nothing goes out silently.
 import { q, getSetting } from './db.js';
+import { sendEmail } from './email.js';
 
 export const smsConfigured = () =>
   !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
@@ -28,92 +29,6 @@ async function sendSms(to, body) {
     body: new URLSearchParams({ To: to, From: process.env.TWILIO_FROM_NUMBER, Body: body }),
   });
   if (!res.ok) throw new Error(`Twilio ${res.status}: ${(await res.text()).slice(0, 300)}`);
-}
-
-// Minimal SMTP client (STARTTLS or implicit TLS) — no dependency needed.
-async function sendEmail(to, subject, body) {
-  const net = await import('node:net');
-  const tls = await import('node:tls');
-  const host = process.env.SMTP_HOST;
-  const port = Number(process.env.SMTP_PORT || 587);
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-  const from = process.env.SMTP_FROM || user;
-  const fromAddr = (from.match(/<([^>]+)>/) || [null, from])[1];
-
-  return new Promise((resolve, reject) => {
-    let socket = port === 465
-      ? tls.connect(port, host, { servername: host })
-      : net.connect(port, host);
-    let buffer = '';
-    let steps = [];
-    let stepIdx = 0;
-    const fail = (err) => { try { socket.destroy(); } catch {} ; reject(err); };
-    const write = (line) => socket.write(line + '\r\n');
-
-    const buildSteps = () => {
-      steps = [
-        { expect: 220, send: `EHLO ownerfieldops.local` },
-        ...(port !== 465 && !socket.encrypted ? [
-          { expect: 250, send: `STARTTLS` },
-          { expect: 220, send: null, upgrade: true },
-          { expect: null, send: `EHLO ownerfieldops.local` },
-        ] : []),
-        { expect: 250, send: `AUTH LOGIN` },
-        { expect: 334, send: Buffer.from(user).toString('base64') },
-        { expect: 334, send: Buffer.from(pass).toString('base64') },
-        { expect: 235, send: `MAIL FROM:<${fromAddr}>` },
-        { expect: 250, send: `RCPT TO:<${to}>` },
-        { expect: 250, send: `DATA` },
-        { expect: 354, send:
-          `From: ${from}\r\nTo: ${to}\r\nSubject: ${subject}\r\n` +
-          `MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n` +
-          body.replace(/\r?\n\./g, '\n..') + `\r\n.` },
-        { expect: 250, send: `QUIT`, done: true },
-      ];
-    };
-
-    const attach = (sock) => {
-      socket = sock;
-      socket.setTimeout(15000, () => fail(new Error('SMTP timeout')));
-      socket.on('error', fail);
-      socket.on('data', (chunk) => {
-        buffer += chunk.toString();
-        // process complete final reply lines ("250 " not "250-")
-        if (!/^\d{3} [^]*\r\n$/m.test(buffer) && !/\r\n$/.test(buffer)) return;
-        const lines = buffer.split('\r\n').filter(Boolean);
-        const last = lines[lines.length - 1];
-        if (/^\d{3}-/.test(last)) return; // multiline reply still coming
-        buffer = '';
-        const code = Number(last.slice(0, 3));
-        const step = steps[stepIdx];
-        if (!step) return;
-        if (step.expect && code !== step.expect) return fail(new Error(`SMTP ${code}: ${last}`));
-        stepIdx++;
-        if (step.upgrade) {
-          const clear = socket;
-          clear.removeAllListeners('data');
-          const secure = tls.connect({ socket: clear, servername: host });
-          secure.once('secureConnect', () => {
-            attach(secure);
-            write(steps[stepIdx].send);
-            stepIdx++;
-          });
-          secure.on('error', fail);
-          return;
-        }
-        if (step.done) { socket.end(); return resolve(); }
-        const next = steps[stepIdx - 1];
-        if (next && next.send) write(next.send);
-      });
-    };
-
-    socket.once(port === 465 ? 'secureConnect' : 'connect', () => {
-      buildSteps();
-      attach(socket);
-    });
-    socket.on('error', fail);
-  });
 }
 
 /**

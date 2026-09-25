@@ -105,7 +105,7 @@ async function renderReferrals(main) {
       <h2>${r?.id ? 'Edit referral' : 'Log a referral'}</h2>
       ${select('referrer_id', 'Who referred them?', customers.map(c => [c.id, c.name]), r?.referrer_id || '')}
       ${select('referred_id', 'New customer', [['', '— not a customer yet —'], ...customers.map(c => [c.id, c.name])], r?.referred_id || '')}
-      ${input('reward_amount', 'Reward you\\'ll give ($)', r?.reward_amount ?? 25, { type: 'number', step: '1' })}
+      ${input('reward_amount', 'Reward you\'ll give ($)', r?.reward_amount ?? 25, { type: 'number', step: '1' })}
       ${checkbox('reward_paid', 'Reward already paid', !!r?.reward_paid)}
       ${textarea('notes', 'Notes', r?.notes || '')}
       <div class="modal-actions">

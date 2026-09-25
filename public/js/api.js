@@ -6,6 +6,7 @@ export async function api(path, options = {}) {
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) location.replace('/login.html');
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }

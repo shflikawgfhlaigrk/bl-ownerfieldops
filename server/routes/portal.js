@@ -1,13 +1,12 @@
 // Customer portal — token-scoped, read-mostly API. Each customer gets a
 // private link: /portal/<token>. No login needed; the token IS the access.
 import { Router } from 'express';
-import { writeFileSync } from 'node:fs';
-import path from 'node:path';
-import { q, logActivity, getSetting, UPLOADS_DIR } from '../db.js';
+import { db, q, logActivity, getSetting } from '../db.js';
 import { wrap, required } from './helpers.js';
 import { rateLimit } from '../rate-limit.js';
 import { quoteTotals } from './sales.js';
 import { invoiceTotals } from './money.js';
+import { storePhoto, servePhoto } from '../photos.js';
 
 export const portal = Router();
 
@@ -39,6 +38,7 @@ portal.get('/portal-data/:token', wrap((req, res) => {
        FROM jobs WHERE customer_id = ? AND status != 'canceled' ORDER BY date DESC LIMIT 20`, c.id);
   for (const job of jobs) {
     job.photos = q.all(`SELECT id, kind, filename, created_at FROM photos WHERE job_id = ? ORDER BY id`, job.id);
+    for (const photo of job.photos) photo.url = `/api/portal-data/${encodeURIComponent(req.params.token)}/photos/${photo.id}`;
   }
 
   res.json({
@@ -58,11 +58,31 @@ portal.post('/portal-data/:token/approve-quote/:quoteId', wrap((req, res) => {
   if (!c) return res.status(404).json({ error: 'Invalid link' });
   const quote = q.get(`SELECT * FROM quotes WHERE id = ? AND customer_id = ?`, req.params.quoteId, c.id);
   if (!quote) return res.status(404).json({ error: 'Quote not found' });
-  if (quote.status !== 'sent') return res.status(400).json({ error: 'This quote can no longer be approved.' });
-  q.run(`UPDATE quotes SET status = 'approved', approved_at = datetime('now'), approval_name = ? WHERE id = ?`,
-    req.body.name || c.name, quote.id);
-  if (quote.lead_id) q.run(`UPDATE leads SET stage = 'won', updated_at = datetime('now') WHERE id = ?`, quote.lead_id);
-  logActivity(c.id, 'quote', `Customer approved quote "${quote.title || '#' + quote.id}" via portal`);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    // The UTC calendar date matches the expiry sweep: today is still valid.
+    // Validate canonical dates too; malformed nonempty values fail closed.
+    const result = q.run(`UPDATE quotes
+        SET status = 'approved', approved_at = datetime('now'), approval_name = ?
+        WHERE id = ? AND customer_id = ? AND status = 'sent'
+          AND (COALESCE(expires_on, '') = '' OR (
+            length(expires_on) = 10
+            AND expires_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+            AND date(expires_on, '+0 days') = expires_on
+            AND expires_on >= date('now')
+          ))`, req.body.name || c.name, quote.id, c.id);
+    if (result.changes !== 1) {
+      db.exec('ROLLBACK');
+      return res.status(400).json({ error: 'This quote can no longer be approved.' });
+    }
+    const approved = q.get(`SELECT * FROM quotes WHERE id = ?`, quote.id);
+    if (approved.lead_id) q.run(`UPDATE leads SET stage = 'won', updated_at = datetime('now') WHERE id = ? AND customer_id = ?`, approved.lead_id, c.id);
+    logActivity(c.id, 'quote', `Customer approved quote "${approved.title || '#' + approved.id}" via portal`);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
   res.json({ ok: true });
 }));
 
@@ -85,6 +105,12 @@ portal.post('/portal-data/:token/messages', wrap((req, res) => {
   res.json({ ok: true });
 }));
 
+portal.get('/portal-data/:token/photos/:id', wrap((req, res) => {
+  const customer = customerByToken(req.params.token);
+  if (!customer) return res.status(404).json({ error: 'Photo not found.' });
+  servePhoto(req, res, q.get('SELECT * FROM photos WHERE id = ?', req.params.id), customer.id);
+}));
+
 // The portal link is public, so photo upload is the one open door that writes to disk.
 // 60/min per IP is far above a real customer sending a few pictures.
 const uploadLimit = rateLimit({
@@ -102,14 +128,7 @@ portal.post('/portal-data/:token/photos', uploadLimit, wrap((req, res) => {
     ? q.get(`SELECT id FROM jobs WHERE id = ? AND customer_id = ?`, req.body.job_id, c.id)
     : q.get(`SELECT id FROM jobs WHERE customer_id = ? ORDER BY id DESC`, c.id);
   if (!job) return res.status(400).json({ error: 'No job on file to attach this photo to yet.' });
-  const match = String(req.body.data).match(/^data:image\/(png|jpe?g|webp|heic);base64,(.+)$/s);
-  if (!match) return res.status(400).json({ error: 'Please upload a png/jpg/webp image' });
-  const buf = Buffer.from(match[2], 'base64');
-  if (buf.length > 15 * 1024 * 1024) return res.status(400).json({ error: 'Photo too large (15MB max)' });
-  const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
-  const filename = `job${job.id}-customer-${Date.now()}.${ext}`;
-  writeFileSync(path.join(UPLOADS_DIR, filename), buf);
-  q.run(`INSERT INTO photos (job_id, kind, filename, uploaded_by) VALUES (?, 'other', ?, ?)`, job.id, filename, c.name);
+  storePhoto(job.id, req.body.data, 'other', c.name, { customerId: c.id });
   logActivity(c.id, 'message', 'Customer uploaded a photo via portal');
   res.json({ ok: true });
 }));
